@@ -22,59 +22,31 @@ jobs:
         with:
           fetch-depth: 0
 
-      - name: Get latest versions
-        id: versions
-        run: |
-          CADDY_VERSION=$(curl -sL "https://api.github.com/repos/caddyserver/caddy/releases/latest" | jq -r .tag_name)
-          echo "Latest Caddy version: $CADDY_VERSION"
-
-          CLOUDFLARE_VERSION=$(curl -sL "https://api.github.com/repos/caddy-dns/cloudflare/releases/latest" | jq -r .tag_name)
-          echo "Latest Cloudflare DNS plugin version: $CLOUDFLARE_VERSION"
-
-          NEW_TAG="${CADDY_VERSION}-${CLOUDFLARE_VERSION}"
-          echo "Potential new tag: $NEW_TAG"
-
-          LATEST_TAG=$(git describe --tags `git rev-list --tags --max-count=1` 2>/dev/null || echo "none")
-          echo "Latest repository tag: $LATEST_TAG"
-
-          if [ "$NEW_TAG" != "$LATEST_TAG" ]; then
-            echo "New release required. Proceeding with build."
-            echo "new_release=true" >> $GITHUB_OUTPUT
-            echo "new_tag=$NEW_TAG" >> $GITHUB_OUTPUT
-            echo "caddy_version=$CADDY_VERSION" >> $GITHUB_OUTPUT
-            echo "cloudflare_version=$CLOUDFLARE_VERSION" >> $GITHUB_OUTPUT
-          else
-            echo "No new versions detected. Exiting."
-            echo "new_release=false" >> $GITHUB_OUTPUT
-          fi
+      - name: Get Date
+        id: date
+        run: echo "tag=$(date +'%Y.%m.%d')" >> $GITHUB_OUTPUT
 
       - name: Set up Go
-        if: steps.versions.outputs.new_release == 'true'
         uses: actions/setup-go@v5
         with:
           go-version: "1.21"
 
       - name: Install xcaddy
-        if: steps.versions.outputs.new_release == 'true'
         run: go install github.com/caddyserver/xcaddy/cmd/xcaddy@latest
 
       - name: Build Caddy with Cloudflare module
-        if: steps.versions.outputs.new_release == 'true'
         run: |
-          CADDY_VERSION="${{ steps.versions.outputs.caddy_version }}"
-          CLOUDFLARE_VERSION="${{ steps.versions.outputs.cloudflare_version }}"
-          echo "Building Caddy $CADDY_VERSION with Cloudflare DNS plugin $CLOUDFLARE_VERSION"
-          ~/go/bin/xcaddy build "$CADDY_VERSION" --with github.com/caddy-dns/cloudflare@"$CLOUDFLARE_VERSION"
+          echo "Building Caddy with the latest Cloudflare DNS plugin"
+          ~/go/bin/xcaddy build --with github.com/caddy-dns/cloudflare
 
       - name: Create Dockerfile
-        if: steps.versions.outputs.new_release == 'true'
         run: |
           cat <<EOF > Dockerfile
           FROM alpine:latest
           LABEL maintainer="${{ github.repository_owner }}"
           LABEL org.opencontainers.image.source="https://github.com/${{ github.repository }}"
           LABEL org.opencontainers.image.description="Caddy with Cloudflare DNS plugin"
-          LABEL org.opencontainers.image.version="${{ steps.versions.outputs.new_tag }}"
+          LABEL org.opencontainers.image.version="${{ steps.date.outputs.tag }}"
 
           COPY ./caddy /usr/bin/caddy
 
@@ -93,16 +65,13 @@ jobs:
           EOF
 
       - name: Set up QEMU
-        if: steps.versions.outputs.new_release == 'true'
         uses: docker/setup-qemu-action@v3
 
       - name: Set up Docker Buildx
-        if: steps.versions.outputs.new_release == 'true'
         id: buildx
         uses: docker/setup-buildx-action@v3
 
       - name: Login to GitHub Container Registry
-        if: steps.versions.outputs.new_release == 'true'
         uses: docker/login-action@v3
         with:
           registry: ghcr.io
@@ -110,22 +79,11 @@ jobs:
           password: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Build and push Docker image
-        if: steps.versions.outputs.new_release == 'true'
         uses: docker/build-push-action@v5
         with:
           context: .
           platforms: linux/amd64,linux/arm64
           push: true
           tags: |
-            ghcr.io/${{ github.repository_owner }}/caddy-cloudflare:${{ steps.versions.outputs.new_tag }}
+            ghcr.io/${{ github.repository_owner }}/caddy-cloudflare:${{ steps.date.outputs.tag }}
             ghcr.io/${{ github.repository_owner }}/caddy-cloudflare:latest
-
-      - name: Tag new release in Git
-        if: steps.versions.outputs.new_release == 'true'
-        run: |
-          NEW_TAG="${{ steps.versions.outputs.new_tag }}"
-          echo "Creating new git tag: $NEW_TAG"
-          git config user.name "github-actions[bot]"
-          git config user.email "github-actions[bot]@users.noreply.github.com"
-          git tag -a "$NEW_TAG" -m "Automated build for $NEW_TAG"
-          git push origin "$NEW_TAG"
