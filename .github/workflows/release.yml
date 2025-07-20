@@ -85,5 +85,5 @@ jobs:
           platforms: linux/amd64,linux/arm64
           push: true
           tags: |
-            ghcr.io/${{ github.repository_owner }}/caddy-cloudflare:${{ steps.date.outputs.tag }}
-            ghcr.io/${{ github.repository_owner }}/caddy-cloudflare:latest
+            ghcr.io/${{ github.repository_owner }}/caddy-cloudflare-dns:${{ steps.date.outputs.tag }}
+            ghcr.io/${{ github.repository_owner }}/caddy-cloudflare-dns:latest
