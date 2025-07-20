@@ -13,16 +13,3 @@ updates:
       github-actions:
         patterns:
           - "*"
-
-  # Maintain dependencies for Go modules
-  # Note: This requires a go.mod file to be present in the repository
-  - package-ecosystem: "gomod"
-    directory: "/"
-    schedule:
-      interval: "daily"
-
-  # Maintain dependencies for Docker
-  - package-ecosystem: "docker"
-    directory: "/"
-    schedule:
-      interval: "daily"
