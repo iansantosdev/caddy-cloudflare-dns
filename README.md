@@ -6,12 +6,12 @@ This repository contains a Go program and a GitHub Actions workflow to automatic
 
 [Caddy](https://caddyserver.com/) is a powerful, enterprise-ready, open-source web server with automatic HTTPS. Its functionality can be extended with various plugins. This project specifically focuses on integrating the [Cloudflare DNS provider module](https://github.com/caddy-dns/cloudflare), which allows Caddy to solve DNS challenges for issuing TLS certificates for your domains managed by Cloudflare.
 
-The primary goal of this project is to automate the build and release process. A GitHub Actions workflow checks daily for new releases of both Caddy and the Cloudflare DNS plugin. If a new version of either is found, a new Caddy binary is built, tagged, and pushed to the GitHub Package Registry.
+The primary goal of this project is to automate the build and release process. A GitHub Actions workflow runs daily to build a new Caddy Docker image with the latest available Caddy and Cloudflare DNS plugin, which is then published to the GitHub Container Registry.
 
 ## Features
 
 -   **Automated Builds**: Automatically builds Caddy with the Cloudflare DNS plugin.
--   **Release Monitoring**: Checks for new versions of Caddy and the Cloudflare DNS plugin to trigger new builds.
+-   **Daily Updates**: Ensures the Caddy build is always up-to-date with the latest Caddy and Cloudflare DNS plugin versions.
 -   **Publishing**: Pushes the custom Caddy build to the GitHub Package Registry.
 -   **Easy to Use**: Can be run manually or used as a template for your own custom Caddy builds.
 
@@ -49,13 +49,11 @@ The repository includes a GitHub Actions workflow defined in `.github/workflows/
 ### How it Works
 
 1.  **Scheduled Trigger**: The workflow is scheduled to run daily.
-2.  **Check for New Releases**: It fetches the latest release tags for both Caddy and the Cloudflare DNS plugin.
-3.  **Compare Versions**: It compares the latest remote versions with the version tag of the last successful build in this repository.
-4.  **Build and Push**: If a newer version of either dependency is found, the workflow proceeds to:
-    a. Build the new Caddy binary using `xcaddy`.
-    b. Log in to the GitHub Package Registry.
-    c. Push the new build as a Docker image to the registry, tagged with the new version.
-    d. Create a new git tag in this repository to mark the new version build.
+2.  **Push Trigger**: The workflow also runs on every push to the `main` branch.
+3.  **Build and Push**: The workflow proceeds to:
+    a. Build a new multi-platform Caddy Docker image using `xcaddy` and the official Caddy builder image. This ensures the latest Caddy and Cloudflare DNS plugin are used.
+    b. Log in to the GitHub Container Registry.
+    c. Push the new build as a Docker image to the registry, tagged with the current date (e.g., `2025.07.20`) and `latest`.
 
 ### Setting it Up in Your Fork
 
