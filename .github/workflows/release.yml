@@ -6,15 +6,109 @@ on:
       - main
   workflow_dispatch:
   schedule:
-    - cron: "0 3 * * *" # Runs every day at 3 AM UTC
+    - cron: "0 0 * * *" # Runs every day at 0 AM UTC
 
 permissions:
   contents: write
   packages: write
 
 jobs:
+  check:
+    name: Check upstream versions
+    runs-on: ubuntu-latest
+    outputs:
+      changed: ${{ steps.check.outputs.changed }}
+      latest_caddy: ${{ steps.check.outputs.latest_caddy }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Install required tools (curl, jq, git)
+        run: |
+          sudo apt-get update -y
+          sudo apt-get install -y --no-install-recommends curl jq git
+
+      - name: Check latest Caddy release and Cloudflare provider commit
+        id: check
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+
+          auth_header="Authorization: token $GITHUB_TOKEN"
+          accept_header="Accept: application/vnd.github.v3+json"
+
+          # Fetch latest Caddy version from Docker Hub
+          token=$(curl -s "https://auth.docker.io/token?service=registry.docker.io&scope=repository:library/caddy:pull" | jq -r .token)
+          latest_digest=$(curl -s -I -H "Accept: application/vnd.docker.distribution.manifest.list.v2+json" -H "Authorization: Bearer $token" "https://registry-1.docker.io/v2/library/caddy/manifests/latest" | grep -i Docker-Content-Digest | awk '{print $2}' | tr -d '\r')
+          version_tags=$(curl -s "https://hub.docker.com/v2/repositories/library/caddy/tags/?page_size=100" | jq -r '.results[].name' | grep -E '^[0-9]+\.[0-9]+\.[0-9]+$' | sort -rV)
+
+          latest_caddy=""
+          for tag in $version_tags; do
+            tag_digest=$(curl -s -I -H "Accept: application/vnd.docker.distribution.manifest.list.v2+json" -H "Authorization: Bearer $token" "https://registry-1.docker.io/v2/library/caddy/manifests/$tag" | grep -i Docker-Content-Digest | awk '{print $2}' | tr -d '\r')
+            if [ "$tag_digest" = "$latest_digest" ]; then
+              latest_caddy=$tag
+              break
+            fi
+          done
+
+          if [ -z "$latest_caddy" ]; then
+            echo "Could not find a version tag matching the latest digest."
+            exit 1
+          fi
+
+          # Fetch caddy-dns/cloudflare default branch and latest commit SHA
+          cf_default=$(curl -s -H "$auth_header" -H "$accept_header" "https://api.github.com/repos/caddy-dns/cloudflare" | jq -r '.default_branch // "main"')
+          if [ "$cf_default" = "null" ] || [ -z "$cf_default" ]; then cf_default="main"; fi
+          latest_cf=$(curl -s -H "$auth_header" -H "$accept_header" "https://api.github.com/repos/caddy-dns/cloudflare/commits/${cf_default}" | jq -r '.sha // ""')
+          if [ "$latest_cf" = "null" ]; then latest_cf=""; fi
+
+          echo "Latest Caddy: ${latest_caddy}"
+          echo "Latest Cloudflare SHA: ${latest_cf}"
+
+          # Ensure versions.json exists and load stored values
+          if [ ! -f versions.json ]; then
+            echo "{}" > versions.json
+          fi
+
+          stored_caddy=$(jq -r '.caddy // ""' versions.json)
+          stored_cf=$(jq -r '.cloudflare_dns // ""' versions.json)
+
+          echo "Stored Caddy: ${stored_caddy}"
+          echo "Stored Cloudflare SHA: ${stored_cf}"
+
+          # If neither upstream value changed, skip the build
+          if [ "${latest_caddy}" = "${stored_caddy}" ] && [ "${latest_cf}" = "${stored_cf}" ]; then
+            echo "No upstream updates detected. Skipping build."
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          # Update versions.json atomically
+          tmpfile="$(mktemp)"
+          jq --arg c "${latest_caddy}" --arg cf "${latest_cf}" '.caddy=$c | .cloudflare_dns=$cf' versions.json > "$tmpfile" && mv "$tmpfile" versions.json
+
+          # Commit and push the change back to main (GITHUB_TOKEN-based pushes won't re-trigger workflows)
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add versions.json || true
+
+          commit_msg="Update versions.json: caddy ${latest_caddy} cloudflare ${latest_cf} [skip ci]"
+          if git commit -m "$commit_msg"; then
+            git push origin HEAD:main || true
+          else
+            echo "No changes to commit."
+          fi
+
+          echo "changed=true" >> "$GITHUB_OUTPUT"
+          echo "latest_caddy=${latest_caddy}" >> "$GITHUB_OUTPUT"
+
   release:
     name: Build and Release
+    needs: check
+    if: needs.check.outputs.changed == 'true'
     runs-on: ubuntu-latest
     steps:
       - name: Checkout repository
@@ -30,10 +124,9 @@ jobs:
         uses: docker/setup-qemu-action@v3
 
       - name: Set up Docker Buildx
-        id: buildx
         uses: docker/setup-buildx-action@v3
 
-      - name: Login to GitHub Container Registry
+      - name: Log in to GitHub Container Registry
         uses: docker/login-action@v3
         with:
           registry: ghcr.io
@@ -48,5 +141,6 @@ jobs:
           platforms: linux/amd64,linux/arm64
           push: true
           tags: |
+            ghcr.io/${{ github.repository_owner }}/caddy-cloudflare-dns:${{ needs.check.outputs.latest_caddy }}
             ghcr.io/${{ github.repository_owner }}/caddy-cloudflare-dns:${{ steps.date.outputs.tag }}
             ghcr.io/${{ github.repository_owner }}/caddy-cloudflare-dns:latest
