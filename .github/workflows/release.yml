@@ -1,0 +1,123 @@
+name: Build and Publish Caddy
+
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+  schedule:
+    - cron: "0 0 * * *" # Runs every day at 0 AM UTC
+
+permissions:
+  contents: write
+  packages: write
+
+jobs:
+  check:
+    name: Check upstream versions
+    runs-on: ubuntu-latest
+    outputs:
+      changed: ${{ steps.check.outputs.changed }}
+      latest_caddy: ${{ steps.check.outputs.latest_caddy }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+
+      - name: Check latest Caddy release and Cloudflare provider commit
+        id: check
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+
+          auth_header="Authorization: token $GITHUB_TOKEN"
+          accept_header="Accept: application/vnd.github.v3+json"
+
+          caddy_info=$(skopeo inspect docker://docker.io/library/caddy:latest)
+          latest_caddy_digest=$(echo "$caddy_info" | jq -r '.Digest')
+          latest_caddy_version=$(echo "$caddy_info" | jq -r '.Env[] | select(startswith("CADDY_VERSION=")) | split("=")[1]' | sed 's/^v//')
+
+          if [ -z "$latest_caddy_digest" ] || [ -z "$latest_caddy_version" ]; then
+            echo "Could not fetch Caddy digest or version information."
+            exit 1
+          fi
+
+          cf_default=$(curl -s -H "$auth_header" -H "$accept_header" "https://api.github.com/repos/caddy-dns/cloudflare" | jq -r '.default_branch // "main"')
+          if [ "$cf_default" = "null" ] || [ -z "$cf_default" ]; then cf_default="main"; fi
+          latest_cf=$(curl -s -H "$auth_header" -H "$accept_header" "https://api.github.com/repos/caddy-dns/cloudflare/commits/${cf_default}" | jq -r '.sha // ""')
+          if [ "$latest_cf" = "null" ]; then latest_cf=""; fi
+
+          if [ ! -f versions.json ]; then
+            echo "{}" > versions.json
+          fi
+
+          stored_caddy_digest=$(jq -r '.caddy_digest // ""' versions.json)
+          stored_cf=$(jq -r '.cloudflare_dns // ""' versions.json)
+
+          echo "Latest Caddy digest: ${latest_caddy_digest}"
+          echo "Stored Caddy digest: ${stored_caddy_digest}"
+          echo "Latest Caddy version: ${latest_caddy_version}"
+          echo "Latest Cloudflare SHA: ${latest_cf}"
+          echo "Stored Cloudflare SHA: ${stored_cf}"
+
+          if [ "${latest_caddy_digest}" = "${stored_caddy_digest}" ] && [ "${latest_cf}" = "${stored_cf}" ]; then
+            echo "No upstream updates detected. Skipping build."
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          tmpfile="$(mktemp)"
+          jq --arg cd "${latest_caddy_digest}" --arg cv "${latest_caddy_version}" --arg cf "${latest_cf}" '.caddy_digest=$cd | .caddy_version=$cv | .cloudflare_dns=$cf' versions.json > "$tmpfile" && mv "$tmpfile" versions.json
+
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add versions.json
+
+          commit_msg="chore(versions): update caddy ${latest_caddy_version} (${latest_caddy_digest:0:12}) cloudflare ${latest_cf:0:7} [skip ci]"
+          git commit -m "$commit_msg"
+          git push
+
+          echo "changed=true" >> "$GITHUB_OUTPUT"
+          echo "latest_caddy=${latest_caddy_version}" >> "$GITHUB_OUTPUT"
+
+  release:
+    name: Build and Release
+    needs: check
+    if: needs.check.outputs.changed == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Get Date
+        id: date
+        run: echo "tag=$(date +'%Y.%m.%d')" >> $GITHUB_OUTPUT
+
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v3
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GitHub Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.repository_owner }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build and push Docker image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: ./Dockerfile
+          platforms: linux/amd64,linux/arm64
+          push: true
+          tags: |
+            ghcr.io/${{ github.repository_owner }}/caddy-cloudflare-dns:${{ needs.check.outputs.latest_caddy }}
+            ghcr.io/${{ github.repository_owner }}/caddy-cloudflare-dns:${{ steps.date.outputs.tag }}
+            ghcr.io/${{ github.repository_owner }}/caddy-cloudflare-dns:latest
