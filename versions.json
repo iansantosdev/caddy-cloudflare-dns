@@ -1,5 +1,5 @@
 {
-  "caddy_digest": "sha256:c3d7ee5d2b11f9dc54f947f68a734c84e9c9666c92c88a7f30b9cba5da182adb",
-  "caddy_version": "2.10.2",
+  "caddy_digest": "sha256:c448cd56ef79160bb0514e10318e4a60f02e5ea141b7ac9f633364941ab56e92",
+  "caddy_version": "2.11.1",
   "cloudflare_dns": "6dc1fbb7e925b0da6736780db2e90f4816b79ab7"
 }
